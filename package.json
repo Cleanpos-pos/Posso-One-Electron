@@ -1,0 +1,57 @@
+{
+    "name": "posso-one-electron",
+    "version": "1.0.9",
+    "description": "Electron app for Posso One",
+    "author": "Posso One",
+    "main": "main.js",
+    "scripts": {
+        "start": "electron .",
+        "build": "electron-builder"
+    },
+    "build": {
+        "appId": "com.possoone.app",
+        "productName": "Posso One",
+        "publish": [
+            {
+                "provider": "github",
+                "owner": "Cleanpos-pos",
+                "repo": "Posso-One-Electron"
+            }
+        ],
+        "files": [
+            "main.js",
+            "preload.js",
+            "windows-utils.js",
+            "resources/**/*",
+            "license.rtf",
+            "node_modules/**/*"
+        ],
+        "asarUnpack": [
+            "resources/**/*"
+        ],
+        "win": {
+            "target": [
+                "nsis"
+            ]
+        },
+        "nsis": {
+            "oneClick": false,
+            "perMachine": true,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": "always",
+            "createStartMenuShortcut": true,
+            "shortcutName": "Posso One",
+            "license": "license.rtf"
+        }
+    },
+    "dependencies": {
+        "electron-updater": "^6.8.3",
+        "escpos": "^3.0.0-alpha.6",
+        "escpos-network": "^3.0.0-alpha.5",
+        "escpos-usb": "^3.0.0-alpha.4"
+    },
+    "devDependencies": {
+        "electron": "^33.0.0",
+        "electron-builder": "^25.1.8"
+    }
+}
