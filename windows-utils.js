@@ -1,240 +1,180 @@
-import { exec } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import os from 'os';
-const cSharpSource = `
-using System;
-using System.IO;
-using System.Runtime.InteropServices;
-
-public class RawPrinterHelper
-{
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    public class DOCINFOA
-    {
-        [MarshalAs(UnmanagedType.LPStr)]
-        public string pDocName;
-        [MarshalAs(UnmanagedType.LPStr)]
-        public string pOutputFile;
-        [MarshalAs(UnmanagedType.LPStr)]
-        public string pDataType;
-    }
-
-    [DllImport("winspool.Drv", EntryPoint = "OpenPrinterA", SetLastError = true, CharSet = CharSet.Ansi, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool OpenPrinter([MarshalAs(UnmanagedType.LPStr)] string szPrinter, out IntPtr hPrinter, IntPtr pd);
-
-    [DllImport("winspool.Drv", EntryPoint = "ClosePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool ClosePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint = "StartDocPrinterA", SetLastError = true, CharSet = CharSet.Ansi, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool StartDocPrinter(IntPtr hPrinter, Int32 level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
-
-    [DllImport("winspool.Drv", EntryPoint = "EndDocPrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool EndDocPrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint = "StartPagePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool StartPagePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint = "EndPagePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool EndPagePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint = "WritePrinter", SetLastError = true, ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
-    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, Int32 dwCount, out Int32 dwWritten);
-
-    public static int SendFileToPrinter(string szPrinterName, string szFileName)
-    {
-        FileStream fs = new FileStream(szFileName, FileMode.Open);
-        BinaryReader br = new BinaryReader(fs);
-        Byte[] bytes;
-        bool bSuccess = false;
-        IntPtr pUnmanagedBytes = new IntPtr(0);
-        int nLength;
-        int error = 0;
-
-        try {
-            nLength = Convert.ToInt32(fs.Length);
-            bytes = br.ReadBytes(nLength);
-            pUnmanagedBytes = Marshal.AllocCoTaskMem(nLength);
-            Marshal.Copy(bytes, 0, pUnmanagedBytes, nLength);
-            bSuccess = SendBytesToPrinter(szPrinterName, pUnmanagedBytes, nLength);
-            if (!bSuccess) {
-                error = Marshal.GetLastWin32Error();
-            }
-        } finally {
-            if (pUnmanagedBytes != IntPtr.Zero) Marshal.FreeCoTaskMem(pUnmanagedBytes);
-            fs.Close();
-        }
-        return error;
-    }
-
-    public static bool SendBytesToPrinter(string szPrinterName, IntPtr pBytes, Int32 dwCount)
-    {
-        Int32 dwWritten = 0;
-        IntPtr hPrinter = new IntPtr(0);
-        DOCINFOA di = new DOCINFOA();
-        bool bSuccess = false;
-
-        di.pDocName = "Posso RAW Document";
-        di.pDataType = "RAW";
-
-        if (OpenPrinter(szPrinterName.Normalize(), out hPrinter, IntPtr.Zero))
-        {
-            if (StartDocPrinter(hPrinter, 1, di))
-            {
-                if (StartPagePrinter(hPrinter))
-                {
-                    bSuccess = WritePrinter(hPrinter, pBytes, dwCount, out dwWritten);
-                    EndPagePrinter(hPrinter);
-                }
-                EndDocPrinter(hPrinter);
-            }
-            ClosePrinter(hPrinter);
-        }
-        return bSuccess;
-    }
-}
-`;
-export const listWindowsPrinters = async () => {
-    // Try PowerShell Get-Printer first, fall back to wmic
-    const tryPowerShell = () => new Promise((resolve) => {
-        const command = `powershell -NoProfile -NonInteractive -Command "Get-Printer -ErrorAction SilentlyContinue | Select-Object Name,PortName,DriverName | ConvertTo-Json -Compress"`;
-        exec(command, { maxBuffer: 1024 * 1024 * 5, timeout: 10000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error("Get-Printer error:", error.message);
-                return resolve([]);
-            }
-            try {
-                const trimmed = stdout.trim();
-                if (!trimmed || trimmed === 'null')
-                    return resolve([]);
-                const result = JSON.parse(trimmed);
-                resolve(Array.isArray(result) ? result : [result]);
-            }
-            catch (e) {
-                console.error("Get-Printer parse error:", e, stdout);
-                resolve([]);
-            }
-        });
+"use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
-    const tryWmic = () => new Promise((resolve) => {
-        exec('wmic printer get Name,PortName,DriverName /format:csv', { timeout: 10000 }, (error, stdout) => {
-            if (error) {
-                console.error("wmic printer error:", error.message);
-                return resolve([]);
-            }
-            try {
-                const lines = stdout.trim().split('\n').filter(l => l.trim());
-                // First line is header: Node,DriverName,Name,PortName
-                if (lines.length < 2)
-                    return resolve([]);
-                const headers = lines[0].split(',').map(h => h.trim());
-                const nameIdx = headers.indexOf('Name');
-                const portIdx = headers.indexOf('PortName');
-                const driverIdx = headers.indexOf('DriverName');
-                const printers = lines.slice(1)
-                    .map(line => {
-                    const cols = line.split(',').map(c => c.trim());
-                    return {
-                        Name: nameIdx >= 0 ? cols[nameIdx] : '',
-                        PortName: portIdx >= 0 ? cols[portIdx] : '',
-                        DriverName: driverIdx >= 0 ? cols[driverIdx] : ''
-                    };
-                })
-                    .filter(p => p.Name && p.Name.length > 0);
-                resolve(printers);
-            }
-            catch (e) {
-                console.error("wmic parse error:", e);
-                resolve([]);
-            }
-        });
-    });
-    const psResult = await tryPowerShell();
-    if (psResult.length > 0)
-        return psResult;
-    console.log("Get-Printer returned empty, trying wmic fallback...");
-    return tryWmic();
 };
-// Cache compiled DLL path
-let cachedDllPath = null;
-const ensureCompiledDll = () => {
-    return new Promise((resolve, reject) => {
-        const dllPath = path.join(os.tmpdir(), 'PossoRawPrinter.dll');
-        // If already cached and exists, return immediately
-        if (cachedDllPath && fs.existsSync(cachedDllPath)) {
-            return resolve(cachedDllPath);
+var __generator = (this && this.__generator) || function (thisArg, body) {
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
+    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    function verb(n) { return function (v) { return step([n, v]); }; }
+    function step(op) {
+        if (f) throw new TypeError("Generator is already executing.");
+        while (g && (g = 0, op[0] && (_ = 0)), _) try {
+            if (f = 1, y && (t = op[0] & 2 ? y["return"] : op[0] ? y["throw"] || ((t = y["return"]) && t.call(y), 0) : y.next) && !(t = t.call(y, op[1])).done) return t;
+            if (y = 0, t) op = [op[0] & 2, t.value];
+            switch (op[0]) {
+                case 0: case 1: t = op; break;
+                case 4: _.label++; return { value: op[1], done: false };
+                case 5: _.label++; y = op[1]; op = [0]; continue;
+                case 7: op = _.ops.pop(); _.trys.pop(); continue;
+                default:
+                    if (!(t = _.trys, t = t.length > 0 && t[t.length - 1]) && (op[0] === 6 || op[0] === 2)) { _ = 0; continue; }
+                    if (op[0] === 3 && (!t || (op[1] > t[0] && op[1] < t[3]))) { _.label = op[1]; break; }
+                    if (op[0] === 6 && _.label < t[1]) { _.label = t[1]; t = op; break; }
+                    if (t && _.label < t[2]) { _.label = t[2]; _.ops.push(op); break; }
+                    if (t[2]) _.ops.pop();
+                    _.trys.pop(); continue;
+            }
+            op = body.call(thisArg, _);
+        } catch (e) { op = [6, e]; y = 0; } finally { f = t = 0; }
+        if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
+    }
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.printToWindows = exports.listWindowsPrinters = void 0;
+var child_process_1 = require("child_process");
+var path_1 = __importDefault(require("path"));
+var fs_1 = __importDefault(require("fs"));
+var os_1 = __importDefault(require("os"));
+var listWindowsPrinters = function () { return __awaiter(void 0, void 0, void 0, function () {
+    var tryPowerShell, tryWmic, psResult;
+    return __generator(this, function (_a) {
+        switch (_a.label) {
+            case 0:
+                tryPowerShell = function () { return new Promise(function (resolve) {
+                    var command = "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-Printer -ErrorAction SilentlyContinue | Select-Object Name,PortName,DriverName | ConvertTo-Json -Compress\"";
+                    (0, child_process_1.exec)(command, { maxBuffer: 1024 * 1024 * 5, timeout: 10000 }, function (error, stdout, stderr) {
+                        if (error) {
+                            console.error("Get-Printer error:", error.message);
+                            return resolve([]);
+                        }
+                        try {
+                            var trimmed = stdout.trim();
+                            if (!trimmed || trimmed === 'null')
+                                return resolve([]);
+                            var result = JSON.parse(trimmed);
+                            resolve(Array.isArray(result) ? result : [result]);
+                        }
+                        catch (e) {
+                            console.error("Get-Printer parse error:", e, stdout);
+                            resolve([]);
+                        }
+                    });
+                }); };
+                tryWmic = function () { return new Promise(function (resolve) {
+                    (0, child_process_1.exec)('wmic printer get Name,PortName,DriverName /format:csv', { timeout: 10000 }, function (error, stdout) {
+                        if (error) {
+                            console.error("wmic printer error:", error.message);
+                            return resolve([]);
+                        }
+                        try {
+                            var lines = stdout.trim().split('\n').filter(function (l) { return l.trim(); });
+                            // First line is header: Node,DriverName,Name,PortName
+                            if (lines.length < 2)
+                                return resolve([]);
+                            var headers = lines[0].split(',').map(function (h) { return h.trim(); });
+                            var nameIdx_1 = headers.indexOf('Name');
+                            var portIdx_1 = headers.indexOf('PortName');
+                            var driverIdx_1 = headers.indexOf('DriverName');
+                            var printers = lines.slice(1)
+                                .map(function (line) {
+                                var cols = line.split(',').map(function (c) { return c.trim(); });
+                                return {
+                                    Name: nameIdx_1 >= 0 ? cols[nameIdx_1] : '',
+                                    PortName: portIdx_1 >= 0 ? cols[portIdx_1] : '',
+                                    DriverName: driverIdx_1 >= 0 ? cols[driverIdx_1] : ''
+                                };
+                            })
+                                .filter(function (p) { return p.Name && p.Name.length > 0; });
+                            resolve(printers);
+                        }
+                        catch (e) {
+                            console.error("wmic parse error:", e);
+                            resolve([]);
+                        }
+                    });
+                }); };
+                return [4 /*yield*/, tryPowerShell()];
+            case 1:
+                psResult = _a.sent();
+                if (psResult.length > 0)
+                    return [2 /*return*/, psResult];
+                console.log("Get-Printer returned empty, trying wmic fallback...");
+                return [2 /*return*/, tryWmic()];
         }
-        // If DLL exists from previous session, use it
-        if (fs.existsSync(dllPath)) {
-            cachedDllPath = dllPath;
-            return resolve(dllPath);
+    });
+}); };
+exports.listWindowsPrinters = listWindowsPrinters;
+/**
+ * Print raw bytes directly to Windows printer via winspool.drv
+ * Uses PowerShell with inline C# Add-Type (no DLL compilation needed)
+ */
+var printToWindows = function (printerName, data) { return __awaiter(void 0, void 0, void 0, function () {
+    var tempDir, timestamp, tempFile, tempScript, psScript;
+    return __generator(this, function (_a) {
+        tempDir = os_1.default.tmpdir();
+        timestamp = Date.now();
+        tempFile = path_1.default.join(tempDir, "print-".concat(timestamp, ".bin"));
+        tempScript = path_1.default.join(tempDir, "print-".concat(timestamp, ".ps1"));
+        try {
+            fs_1.default.writeFileSync(tempFile, data);
         }
-        // Compile once
-        console.log('Compiling Windows print helper DLL (one-time)...');
-        const csPath = path.join(os.tmpdir(), 'RawPrinterHelper.cs');
-        fs.writeFileSync(csPath, cSharpSource);
-        const compileCommand = `
-$cscPath = [System.IO.Path]::Combine([System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory(), 'csc.exe')
-if (Test-Path $cscPath) {
-    & $cscPath /target:library /out:"${dllPath.replace(/\\/g, '\\\\')}" "${csPath.replace(/\\/g, '\\\\')}" 2>&1
-    if (Test-Path "${dllPath.replace(/\\/g, '\\\\')}") { Write-Output "OK" } else { Write-Output "FAIL" }
-} else {
-    Add-Type -TypeDefinition (Get-Content "${csPath.replace(/\\/g, '\\\\')}" -Raw) -OutputAssembly "${dllPath.replace(/\\/g, '\\\\')}" -OutputType Library
-    if (Test-Path "${dllPath.replace(/\\/g, '\\\\')}") { Write-Output "OK" } else { Write-Output "FAIL" }
-}
-`;
-        exec(`powershell -NoProfile -Command "${compileCommand.replace(/"/g, '\\"')}"`, { timeout: 30000 }, (error, stdout) => {
+        catch (err) {
+            return [2 /*return*/, "Failed to write temp file: ".concat(err.message)];
+        }
+        psScript = "\nAdd-Type -TypeDefinition @\"\nusing System;\nusing System.IO;\nusing System.Runtime.InteropServices;\n\npublic class RawPrinterHelper {\n    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]\n    public class DOCINFOA {\n        [MarshalAs(UnmanagedType.LPStr)] public string pDocName;\n        [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;\n        [MarshalAs(UnmanagedType.LPStr)] public string pDataType;\n    }\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"OpenPrinterA\", SetLastError = true, CharSet = CharSet.Ansi, ExactSpelling = true)]\n    public static extern bool OpenPrinter([MarshalAs(UnmanagedType.LPStr)] string szPrinter, out IntPtr hPrinter, IntPtr pd);\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"ClosePrinter\", SetLastError = true)]\n    public static extern bool ClosePrinter(IntPtr hPrinter);\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"StartDocPrinterA\", SetLastError = true, CharSet = CharSet.Ansi)]\n    public static extern bool StartDocPrinter(IntPtr hPrinter, Int32 level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"EndDocPrinter\", SetLastError = true)]\n    public static extern bool EndDocPrinter(IntPtr hPrinter);\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"StartPagePrinter\", SetLastError = true)]\n    public static extern bool StartPagePrinter(IntPtr hPrinter);\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"EndPagePrinter\", SetLastError = true)]\n    public static extern bool EndPagePrinter(IntPtr hPrinter);\n\n    [DllImport(\"winspool.drv\", EntryPoint = \"WritePrinter\", SetLastError = true)]\n    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, Int32 dwCount, out Int32 dwWritten);\n\n    public static bool SendBytesToPrinter(string printerName, byte[] bytes) {\n        IntPtr hPrinter = IntPtr.Zero;\n        DOCINFOA di = new DOCINFOA();\n        di.pDocName = \"RAW Document\";\n        di.pDataType = \"RAW\";\n\n        bool success = false;\n\n        if (OpenPrinter(printerName.Normalize(), out hPrinter, IntPtr.Zero)) {\n            if (StartDocPrinter(hPrinter, 1, di)) {\n                if (StartPagePrinter(hPrinter)) {\n                    IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);\n                    Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);\n\n                    int dwWritten;\n                    success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out dwWritten);\n\n                    Marshal.FreeCoTaskMem(pUnmanagedBytes);\n                    EndPagePrinter(hPrinter);\n                }\n                EndDocPrinter(hPrinter);\n            }\n            ClosePrinter(hPrinter);\n        }\n        return success;\n    }\n}\n\"@\n\ntry {\n    $bytes = [System.IO.File]::ReadAllBytes(\"".concat(tempFile.replace(/\\/g, '\\\\'), "\")\n    $result = [RawPrinterHelper]::SendBytesToPrinter(\"").concat(printerName.replace(/"/g, '`"'), "\", $bytes)\n    if ($result) {\n        Write-Output \"SUCCESS\"\n    } else {\n        $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()\n        Write-Output \"FAILED:$err\"\n    }\n} catch {\n    Write-Output \"ERROR:$_\"\n} finally {\n    Remove-Item -Path \"").concat(tempFile.replace(/\\/g, '\\\\'), "\" -Force -ErrorAction SilentlyContinue\n}\n");
+        try {
+            fs_1.default.writeFileSync(tempScript, psScript, 'utf8');
+        }
+        catch (err) {
             try {
-                fs.unlinkSync(csPath);
+                fs_1.default.unlinkSync(tempFile);
             }
             catch (e) { }
-            if (fs.existsSync(dllPath)) {
-                cachedDllPath = dllPath;
-                console.log('Windows print helper DLL compiled successfully');
-                resolve(dllPath);
-            }
-            else {
-                reject(new Error('Failed to compile print helper: ' + (stdout || error?.message)));
-            }
-        });
-    });
-};
-export const printToWindows = async (printerName, data) => {
-    const tempDir = os.tmpdir();
-    const tempFile = path.join(tempDir, `print-${Date.now()}.bin`);
-    try {
-        fs.writeFileSync(tempFile, data);
-        const dllPath = await ensureCompiledDll();
-        return new Promise((resolve) => {
-            // Fast print using pre-compiled DLL
-            const psCommand = `
-[System.Reflection.Assembly]::LoadFrom('${dllPath.replace(/\\/g, '\\\\')}') | Out-Null
-$res = [RawPrinterHelper]::SendFileToPrinter('${printerName}', '${tempFile.replace(/\\/g, '\\\\')}')
-if ($res -eq 0) { "OK" } else { "FAIL:$res" }
-`;
-            exec(`powershell -NoProfile -NonInteractive -Command "${psCommand.replace(/"/g, '\\"')}"`, { timeout: 10000 }, (error, stdout, stderr) => {
-                try {
-                    if (fs.existsSync(tempFile))
-                        fs.unlinkSync(tempFile);
-                }
-                catch (e) { }
-                const output = stdout.trim();
-                console.log(`Print Output: ${output}`);
-                if (output.includes("OK")) {
-                    resolve(null);
-                }
-                else {
-                    resolve(`Print failed: ${output} ${stderr || ''} ${error?.message || ''}`);
-                }
-            });
-        });
-    }
-    catch (e) {
-        try {
-            if (fs.existsSync(tempFile))
-                fs.unlinkSync(tempFile);
+            return [2 /*return*/, "Failed to write script file: ".concat(err.message)];
         }
-        catch (ex) { }
-        return `Print error: ${e.message}`;
-    }
-};
+        return [2 /*return*/, new Promise(function (resolve) {
+                (0, child_process_1.exec)("powershell -NoProfile -ExecutionPolicy Bypass -File \"".concat(tempScript, "\""), { maxBuffer: 1024 * 1024, timeout: 15000 }, function (error, stdout, stderr) {
+                    // Clean up temp files
+                    try {
+                        fs_1.default.unlinkSync(tempFile);
+                    }
+                    catch (e) { }
+                    try {
+                        fs_1.default.unlinkSync(tempScript);
+                    }
+                    catch (e) { }
+                    if (error) {
+                        console.error('Print error:', error);
+                        console.error('Stderr:', stderr);
+                        resolve("Print error: ".concat(error.message));
+                        return;
+                    }
+                    var output = stdout.trim();
+                    console.log("Print Output: ".concat(output));
+                    if (output === 'SUCCESS') {
+                        resolve(null); // null means success
+                    }
+                    else if (output.startsWith('FAILED:')) {
+                        var errorCode = output.split(':')[1];
+                        resolve("Print failed with Windows error code: ".concat(errorCode));
+                    }
+                    else if (output.startsWith('ERROR:')) {
+                        resolve("Print error: ".concat(output.substring(6)));
+                    }
+                    else {
+                        resolve("Unexpected output: ".concat(output));
+                    }
+                });
+            })];
+    });
+}); };
+exports.printToWindows = printToWindows;
