@@ -1,6 +1,6 @@
 {
     "name": "posso-one-electron",
-    "version": "1.0.56",
+    "version": "1.0.83",
     "description": "Electron app for Posso One",
     "author": "Posso One",
     "main": "main.js",

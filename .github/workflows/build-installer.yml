@@ -1,0 +1,41 @@
+name: Build installer
+
+# Builds the Windows installer on a real Windows runner and uploads it to a
+# DRAFT GitHub release for the version in package.json. Tills only auto-update
+# from published releases, so nothing reaches them until the draft is published
+# by hand after a test on one till.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'claude/youthful-euler-t2cdu0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Check print helpers are present
+        shell: bash
+        run: ls -la resources && test -f resources/PossoPrintHelper.exe && test -f resources/PossoRawPrinter.dll
+      - name: Build and upload to a draft release
+        run: npx electron-builder --win nsis --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: posso-one-installer
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          if-no-files-found: error
